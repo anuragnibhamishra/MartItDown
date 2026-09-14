@@ -19,6 +19,7 @@ import {
   List,
   ListChecks,
   ListOrdered,
+  Menu,
   Moon,
   MoreHorizontal,
   Quote,
@@ -30,7 +31,6 @@ import {
   X,
 } from 'lucide-react'
 import 'highlight.js/styles/github-dark.css'
-import './index.css'
 
 const starterMarkdown = `# Welcome to MarkItDown
 
@@ -74,6 +74,10 @@ type Theme = 'light' | 'dark' | 'system'
 type View = 'write' | 'preview'
 type Toast = { id: number; message: string; tone: 'success' | 'error' | 'info' }
 type ToolbarAction = 'h1' | 'h2' | 'bold' | 'italic' | 'strike' | 'link' | 'image' | 'quote' | 'code' | 'bullet' | 'ordered' | 'task'
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
 
 const storageKey = 'markitdown-document'
 const themeKey = 'markitdown-theme'
@@ -102,7 +106,12 @@ function Logo() {
 }
 
 function IconButton({ label, children, onClick, active = false }: { label: string; children: ReactNode; onClick?: () => void; active?: boolean }) {
-  return <button type="button" className={`icon-button ${active ? 'is-active' : ''}`} aria-label={label} title={label} onClick={onClick}>{children}</button>
+  const handleClick = onClick ?? (() => window.dispatchEvent(new CustomEvent('markitdown-section-menu', { detail: label })))
+  return <button type="button" className={`icon-button ${active ? 'is-active' : ''}`} aria-label={label} title={label} onClick={handleClick}>{children}</button>
+}
+
+function MenuItem({ label, children, onClick }: { label: string; children: ReactNode; onClick: () => void }) {
+  return <button type="button" className="menu-item" onClick={onClick}>{children}<span>{label}</span></button>
 }
 
 function ToolbarButton({ label, children, onClick }: { label: string; children: ReactNode; onClick: () => void }) {
@@ -142,9 +151,14 @@ function App() {
   const [readingMode, setReadingMode] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
+  const [showEditorMenu, setShowEditorMenu] = useState(false)
+  const [showPreviewMenu, setShowPreviewMenu] = useState(false)
   const [newDocumentPrompt, setNewDocumentPrompt] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [isEditingName, setIsEditingName] = useState(false)
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
+  const [isInstalled, setIsInstalled] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const dirty = content !== savedContent
@@ -163,6 +177,40 @@ function App() {
     localStorage.setItem(themeKey, theme)
     document.documentElement.dataset.theme = theme
   }, [theme])
+
+  useEffect(() => {
+    const onSectionMenu = (event: Event) => {
+      const label = (event as CustomEvent<string>).detail
+      setShowEditorMenu(label === 'More editor options')
+      setShowPreviewMenu(label === 'More preview options')
+    }
+    window.addEventListener('markitdown-section-menu', onSectionMenu)
+    return () => window.removeEventListener('markitdown-section-menu', onSectionMenu)
+  }, [])
+
+  useEffect(() => {
+    const displayMode = window.matchMedia('(display-mode: standalone)')
+    const updateInstalledState = () => setIsInstalled(displayMode.matches)
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setInstallPrompt(event as BeforeInstallPromptEvent)
+    }
+    const onAppInstalled = () => {
+      setInstallPrompt(null)
+      setIsInstalled(true)
+      notify('MarkItDown installed')
+    }
+
+    updateInstalledState()
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+    window.addEventListener('appinstalled', onAppInstalled)
+    displayMode.addEventListener('change', updateInstalledState)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', onAppInstalled)
+      displayMode.removeEventListener('change', updateInstalledState)
+    }
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -245,12 +293,24 @@ function App() {
     setShowExport(false)
   }
 
-  const themeIcon = theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />
+  const installApp = async () => {
+    if (!installPrompt) {
+      notify('Use your browser menu to install MarkItDown', 'info')
+      return
+    }
+    await installPrompt.prompt()
+    const { outcome } = await installPrompt.userChoice
+    if (outcome === 'accepted') notify('MarkItDown is installing')
+    setInstallPrompt(null)
+  }
+
+  const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark')
+  const themeIcon = theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />
 
   return <div className={`app-shell ${readingMode ? 'reading-mode' : ''}`}>
     <header className="topbar">
       <div className="topbar-left"><Logo /><span className="topbar-divider" /><div className="document-name">{isEditingName ? <input autoFocus value={name} onChange={(event) => setName(event.target.value)} onBlur={() => setIsEditingName(false)} onKeyDown={(event) => event.key === 'Enter' && setIsEditingName(false)} aria-label="Document name" /> : <button type="button" className="document-name-button" onClick={() => setIsEditingName(true)}>{name}<ChevronDown size={13} /></button>}</div></div>
-      <div className="topbar-actions"><span className={`save-state ${dirty ? 'dirty' : ''}`}><span className="status-dot" />{dirty ? 'Unsaved changes' : 'Saved'}</span><div className="action-divider" /><IconButton label="New document" onClick={newDocument}><FilePlus2 size={16} /></IconButton><IconButton label="Open Markdown file" onClick={() => fileInputRef.current?.click()}><FolderOpen size={16} /></IconButton><IconButton label="Save Markdown file" onClick={saveDocument}><Save size={16} /></IconButton><div className="export-wrap"><button type="button" className="export-button" onClick={() => setShowExport((open) => !open)}>Export <ChevronDown size={13} /></button>{showExport && <div className="export-menu"><button type="button" onClick={saveDocument}><Download size={15} />Download Markdown</button><button type="button" onClick={copyMarkdown}><Clipboard size={15} />Copy Markdown</button><button type="button" onClick={copyHtml}><Code2 size={15} />Copy rendered HTML</button><button type="button" onClick={() => { window.print(); setShowExport(false) }}><FileText size={15} />Print preview</button></div>}</div><IconButton label="Keyboard shortcuts" onClick={() => setShowShortcuts(true)}><Keyboard size={16} /></IconButton><IconButton label={`Theme: ${theme}`} onClick={() => setTheme(theme === 'system' ? 'dark' : theme === 'dark' ? 'light' : 'system')}>{themeIcon}</IconButton></div>
+      <div className="topbar-actions"><span className={`save-state ${dirty ? 'dirty' : ''}`}><span className="status-dot" />{dirty ? 'Unsaved changes' : 'Saved'}</span><div className="action-divider" /><div className="desktop-actions"><IconButton label="New document" onClick={newDocument}><FilePlus2 size={16} /></IconButton><IconButton label="Open Markdown file" onClick={() => fileInputRef.current?.click()}><FolderOpen size={16} /></IconButton><IconButton label="Save Markdown file" onClick={saveDocument}><Save size={16} /></IconButton><div className="export-wrap"><button type="button" className="export-button" onClick={() => setShowExport((open) => !open)}>Export <ChevronDown size={13} /></button>{showExport && <div className="export-menu"><button type="button" onClick={saveDocument}><Download size={15} />Download Markdown</button><button type="button" onClick={copyMarkdown}><Clipboard size={15} />Copy Markdown</button><button type="button" onClick={copyHtml}><Code2 size={15} />Copy rendered HTML</button><button type="button" onClick={() => { window.print(); setShowExport(false) }}><FileText size={15} />Print preview</button></div>}</div>{!isInstalled && <IconButton label="Install MarkItDown" onClick={installApp}><Download size={16} /></IconButton>}<IconButton label="Keyboard shortcuts" onClick={() => setShowShortcuts(true)}><Keyboard size={16} /></IconButton><IconButton label={`Theme: ${theme}`} onClick={toggleTheme}>{themeIcon}</IconButton></div><div className="mobile-menu-wrap"><IconButton label="Open app menu" onClick={() => setShowMobileMenu((open) => !open)} active={showMobileMenu}><Menu size={18} /></IconButton>{showMobileMenu && <div className="mobile-menu"><MenuItem label="New document" onClick={() => { newDocument(); setShowMobileMenu(false) }}><FilePlus2 size={16} /></MenuItem><MenuItem label="Open Markdown file" onClick={() => { fileInputRef.current?.click(); setShowMobileMenu(false) }}><FolderOpen size={16} /></MenuItem><MenuItem label="Save Markdown file" onClick={() => { saveDocument(); setShowMobileMenu(false) }}><Save size={16} /></MenuItem><MenuItem label="Export Markdown" onClick={() => { saveDocument(); setShowMobileMenu(false) }}><Download size={16} /></MenuItem>{!isInstalled && <MenuItem label="Install MarkItDown" onClick={() => { installApp(); setShowMobileMenu(false) }}><Download size={16} /></MenuItem>}<MenuItem label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} onClick={() => { toggleTheme(); setShowMobileMenu(false) }}>{themeIcon}</MenuItem></div>}</div></div>
     </header>
     <input ref={fileInputRef} className="visually-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={openFile} />
     <main className="workspace">
@@ -261,6 +321,8 @@ function App() {
     <footer className="statusbar"><div><span className="status-file"><FileText size={14} />{name}</span><span className="status-separator" /><span>Markdown</span></div><div><span>Words: <b>{countWords(content)}</b></span><span>Characters: <b>{content.length}</b></span><span>Lines: <b>{content ? content.split('\n').length : 0}</b></span></div></footer>
     {readingMode && <div className="reading-exit"><span>Focus mode</span><button type="button" onClick={() => setReadingMode(false)}><X size={14} /> Exit</button></div>}
     <div className="toast-stack" aria-live="polite">{toasts.map((toast) => <div className={`toast ${toast.tone}`} key={toast.id}>{toast.tone === 'success' ? <Check size={15} /> : toast.tone === 'error' ? <X size={15} /> : <HelpCircle size={15} />}{toast.message}</div>)}</div>
+    {showEditorMenu && <div className="section-menu-overlay editor-menu-overlay"><MenuItem label="Focus editor" onClick={() => { editorRef.current?.focus(); setShowEditorMenu(false) }}><Type size={15} /></MenuItem><MenuItem label="New document" onClick={() => { newDocument(); setShowEditorMenu(false) }}><FilePlus2 size={15} /></MenuItem><MenuItem label="Save Markdown" onClick={() => { saveDocument(); setShowEditorMenu(false) }}><Save size={15} /></MenuItem></div>}
+    {showPreviewMenu && <div className="section-menu-overlay preview-menu-overlay"><MenuItem label="Copy rendered HTML" onClick={() => { copyHtml(); setShowPreviewMenu(false) }}><Code2 size={15} /></MenuItem><MenuItem label="Print preview" onClick={() => { window.print(); setShowPreviewMenu(false) }}><FileText size={15} /></MenuItem><MenuItem label="Focus reading mode" onClick={() => { setReadingMode(true); setShowPreviewMenu(false) }}><Search size={15} /></MenuItem></div>}
     {showShortcuts && <Modal title="Keyboard shortcuts" onClose={() => setShowShortcuts(false)}><div className="shortcut-list"><div><span>Bold</span><kbd>⌘ B</kbd></div><div><span>Italic</span><kbd>⌘ I</kbd></div><div><span>Insert link</span><kbd>⌘ K</kbd></div><div><span>Save document</span><kbd>⌘ S</kbd></div><div><span>Show shortcuts</span><kbd>?</kbd></div></div></Modal>}
     {newDocumentPrompt && <Modal title="Start a new document?" onClose={() => setNewDocumentPrompt(false)}><p className="modal-copy">You have unsaved changes. Are you sure you want to start a new document?</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setNewDocumentPrompt(false)}>Cancel</button><button type="button" className="primary-button" onClick={startNewDocument}>Start new</button></div></Modal>}
   </div>
